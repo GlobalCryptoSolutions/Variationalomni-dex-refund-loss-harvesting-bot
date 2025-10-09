@@ -1,0 +1,127 @@
+import os
+from web3 import Web3
+from web3.middleware import geth_poa_middleware
+from eth_account import Account
+from dotenv import load_dotenv
+import time
+import json
+
+# Load environment variables
+load_dotenv()
+
+# Configuration
+ARBITRUM_RPC_URL = os.getenv('ARBITRUM_RPC_URL')  # e.g., https://arb-mainnet.g.alchemy.com/v2/YOUR_KEY
+PRIVATE_KEY = os.getenv('PRIVATE_KEY')  # Your wallet private key (keep secure!)
+USDC_ADDRESS = '0xFF970A61A04b1cA14834A43f5dE4533eBDDB5CC8'  # USDC on Arbitrum
+# TODO: Replace with actual Variational Omni contract addresses and ABI
+OMNI_TRADING_CONTRACT_ADDRESS = '0x...'  # Main trading contract or factory address
+OMNI_ABI = []  # Load from JSON file or hardcode the ABI for trade functions
+
+# Strategy params for loss refund farming
+TRADE_SIZE_USD = 10  # Small trade size to minimize risk
+LEVERAGE = 1  # Low leverage to reduce liquidation risk
+PAIR_SYMBOL = 'BTC/USD'  # Choose a stable or low-vol pair; adjust for available pairs
+NUM_TRADES = 10  # Number of open/close cycles per run
+SLEEP_INTERVAL = 60  # Seconds between trades to avoid rate limits/spam
+
+class OmniLossRefundBot:
+    def __init__(self):
+        # Connect to Arbitrum
+        self.w3 = Web3(Web3.HTTPProvider(ARBITRUM_RPC_URL))
+        self.w3.middleware_onion.inject(geth_poa_middleware, layer=0)  # For Arbitrum PoA
+        if not self.w3.is_connected():
+            raise Exception("Failed to connect to Arbitrum RPC")
+        
+        # Load account
+        self.account = Account.from_key(PRIVATE_KEY)
+        self.address = self.account.address
+        
+        # Contract instance
+        self.contract = self.w3.eth.contract(
+            address=Web3.to_checksum_address(OMNI_TRADING_CONTRACT_ADDRESS),
+            abi=OMNI_ABI
+        )
+        
+        # USDC contract for approvals/deposits
+        usdc_abi = [
+            {
+                "constant": False,
+                "inputs": [{"name": "_spender", "type": "address"}, {"name": "_value", "type": "uint256"}],
+                "name": "approve",
+                "outputs": [{"name": "", "type": "bool"}],
+                "type": "function"
+            },
+            # Add other USDC functions if needed (balanceOf, etc.)
+        ]
+        self.usdc = self.w3.eth.contract(address=Web3.to_checksum_address(USDC_ADDRESS), abi=usdc_abi)
+    
+    def approve_usdc(self, amount):
+        """Approve USDC spending for the Omni contract"""
+        tx = self.usdc.functions.approve(OMNI_TRADING_CONTRACT_ADDRESS, amount).build_transaction({
+            'from': self.address,
+            'gas': 200000,
+            'gasPrice': self.w3.to_wei('0.1', 'gwei'),
+            'nonce': self.w3.eth.get_transaction_count(self.address),
+        })
+        signed_tx = self.w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
+        tx_hash = self.w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+        print(f"Approval TX: {tx_hash.hex()}")
+        self.w3.eth.wait_for_transaction_receipt(tx_hash)
+        print("USDC approved.")
+    
+    def get_quote(self, symbol, side, size, leverage):
+        """TODO: Implement API call to get RFQ quote from Omni backend.
+        This is off-chain; assumes REST API endpoint like https://api.omni.variational.io/quote
+        Returns quote dict with price, etc."""
+        # Placeholder - replace with actual requests.get to API
+        # Example: response = requests.get(f"https://api.omni.variational.io/quote?symbol={symbol}&side={side}&size={size}&leverage={leverage}", headers={'Authorization': 'Bearer YOUR_API_KEY'})
+        # return response.json()
+        return {'price': 60000, 'slippage': 0.001}  # Dummy
+    
+    def open_position(self, symbol, side, size, leverage):
+        """Open a position using the quote.
+        TODO: Build and send tx to contract.openPosition or similar function."""
+        quote = self.get_quote(symbol, side, size, leverage)
+        # Placeholder function call - replace with actual contract method
+        # e.g., tx = self.contract.functions.openPosition(symbol, side, size, leverage, quote['price']).build_transaction({...})
+        print(f"Opened {side} position on {symbol} at {quote['price']} with size {size}")
+        # Simulate tx
+        return 'dummy_tx_hash'
+    
+    def close_position(self, position_id):
+        """Close the position to realize P&L (aim for small loss via spread).
+        TODO: Use market close or limit to ensure small loss."""
+        # Placeholder
+        print("Closed position - realized small loss via spread.")
+        # Simulate
+        return 'dummy_close_tx_hash'
+    
+    def check_refund(self):
+        """Monitor for refund events or balance changes.
+        TODO: Listen to events like RefundEvent(address, amount) or query balance delta."""
+        # Placeholder - check USDC balance before/after
+        print("Checked for refund - no new refund this cycle.")
+    
+    def run_cycle(self):
+        """One trade cycle: open -> wait -> close -> check refund"""
+        side = 'long'  # Or randomize
+        position_id = self.open_position(PAIR_SYMBOL, side, TRADE_SIZE_USD, LEVERAGE)
+        time.sleep(SLEEP_INTERVAL)  # Wait for price movement or just spread
+        self.close_position(position_id)
+        self.check_refund()
+    
+    def farm_volume(self):
+        """Main loop to farm volume for higher refund tiers"""
+        # Initial approval if needed
+        self.approve_usdc(TRADE_SIZE_USD * NUM_TRADES * 2)  # Extra buffer
+        
+        for i in range(NUM_TRADES):
+            print(f"Cycle {i+1}/{NUM_TRADES}")
+            self.run_cycle()
+            time.sleep(10)  # Cool down
+        
+        print("Farming session complete. Check your volume tier and refunds on app.")
+
+if __name__ == "__main__":
+    bot = OmniLossRefundBot()
+    bot.farm_volume()
